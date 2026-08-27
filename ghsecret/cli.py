@@ -6,7 +6,6 @@ import argparse
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -17,19 +16,27 @@ from .scanner import scan_directory
 GITHUB_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
 
 
-def _clone(url: str) -> Path:
+def _clone(url: str, history: bool = False) -> Path:
+    """Kloniert ein öffentliches GitHub-Repository für den Scan."""
     if not GITHUB_RE.fullmatch(url):
         raise ValueError(
             "Nur öffentliche GitHub-Repository-URLs im Format "
             "https://github.com/owner/repo werden akzeptiert."
         )
+
     tmp = Path(tempfile.mkdtemp(prefix="ghsecret-"))
     target = tmp / "repo"
-    result = subprocess.run(
-        ["git", "clone", "--quiet", "--filter=blob:none", "--no-tags", "--depth", "1", url, str(target)],
-        capture_output=True,
-        text=True,
-    )
+    command = ["git", "clone", "--quiet", "--filter=blob:none", "--no-tags"]
+    if not history:
+        command.extend(["--depth", "1"])
+    command.extend([url, str(target)])
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except FileNotFoundError as exc:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError("Git wurde nicht gefunden. Bitte Git installieren und erneut versuchen.") from exc
+
     if result.returncode != 0:
         shutil.rmtree(tmp, ignore_errors=True)
         raise RuntimeError(result.stderr.strip() or "Git-Clone fehlgeschlagen.")
@@ -39,7 +46,7 @@ def _clone(url: str) -> Path:
 def _scan_target(target: str, history: bool) -> tuple[str, list]:
     # Windows-Pfade wie C:\\repo dürfen nicht als URL interpretiert werden.
     if GITHUB_RE.fullmatch(target):
-        repo = _clone(target)
+        repo = _clone(target, history=history)
         try:
             findings = scan_git_history(repo) if history else scan_directory(repo)
             return target, findings
@@ -58,7 +65,7 @@ def _scan_target(target: str, history: bool) -> tuple[str, list]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ghsecret",
-        description="Deutscher Security-Scanner für potenziell veröffentlichte Secrets in Git-Repositories.",
+        description="Security-Scanner für potenziell veröffentlichte Secrets in Git-Repositories.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     scan = sub.add_parser("scan", help="Repository oder lokalen Ordner untersuchen")
@@ -78,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             target, findings = _scan_target(args.ziel, args.history)
         except (ValueError, RuntimeError, OSError) as exc:
-            print(f"Fehler: {exc}", file=sys.stderr)
+            print(f"Fehler: {exc}", file=__import__("sys").stderr)
             return 2
         print(render_json(findings, target) if args.format == "json" else render_text(findings, target))
         return 1 if findings else 0
