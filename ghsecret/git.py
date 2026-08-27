@@ -1,4 +1,4 @@
-"""Git-History-Unterstützung ohne Ausführung gefundener Credentials."""
+"""Git-History-Unterstützung für defensive Secret-Scans."""
 
 from __future__ import annotations
 
@@ -30,30 +30,43 @@ def is_git_repository(path: str | Path) -> bool:
         return False
 
 
+def _history_patches(repo: Path) -> list[tuple[str, str]]:
+    """Liefert nur hinzugefügte Zeilen aus der erreichbaren Git-Historie."""
+    output = _run_git(
+        repo,
+        "log",
+        "--all",
+        "--format=__GHSECRET_COMMIT__%H",
+        "--patch",
+        "--no-ext-diff",
+        "--unified=0",
+    )
+    current_commit = "unbekannt"
+    current_path = "<patch>"
+    result: list[tuple[str, str]] = []
+    for line in output.splitlines():
+        if line.startswith("__GHSECRET_COMMIT__"):
+            current_commit = line.removeprefix("__GHSECRET_COMMIT__")[:40]
+            current_path = "<patch>"
+        elif line.startswith("+++ b/"):
+            current_path = line[6:]
+        elif line.startswith("+") and not line.startswith("+++"):
+            result.append((current_commit, f"{current_path}: {line[1:]}"))
+    return result
+
+
 def scan_git_history(path: str | Path) -> list[Finding]:
     repo = Path(path).expanduser().resolve()
     if not is_git_repository(repo):
         raise ValueError(f"Kein Git-Repository: {repo}")
 
-    commits = _run_git(repo, "rev-list", "--all").splitlines()
     findings: list[Finding] = []
     seen: set[tuple[str, str, int, str]] = set()
-
-    for commit in commits:
-        try:
-            changed = _run_git(repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit).splitlines()
-        except subprocess.CalledProcessError:
-            continue
-        for rel in changed:
-            if not rel:
-                continue
-            try:
-                text = _run_git(repo, "show", f"{commit}:{rel}")
-            except subprocess.CalledProcessError:
-                continue
-            for finding in scan_text(text, rel, f"commit:{commit[:12]}"):
-                key = (commit, rel, finding.line, finding.fingerprint)
-                if key not in seen:
-                    findings.append(finding)
-                    seen.add(key)
+    for commit, item in _history_patches(repo):
+        relative, line = item.split(": ", 1)
+        for finding in scan_text(line, relative, f"commit:{commit[:12]}"):
+            key = (commit, relative, finding.line, finding.fingerprint)
+            if key not in seen:
+                findings.append(finding)
+                seen.add(key)
     return findings
