@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 from .git import scan_git_history
 from .report import render_json, render_text
@@ -19,9 +18,11 @@ GITHUB_RE = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+
 
 
 def _clone(url: str) -> Path:
-    match = GITHUB_RE.fullmatch(url)
-    if not match:
-        raise ValueError("Nur öffentliche GitHub-Repository-URLs im Format https://github.com/owner/repo werden akzeptiert.")
+    if not GITHUB_RE.fullmatch(url):
+        raise ValueError(
+            "Nur öffentliche GitHub-Repository-URLs im Format "
+            "https://github.com/owner/repo werden akzeptiert."
+        )
     tmp = Path(tempfile.mkdtemp(prefix="ghsecret-"))
     target = tmp / "repo"
     result = subprocess.run(
@@ -36,21 +37,29 @@ def _clone(url: str) -> Path:
 
 
 def _scan_target(target: str, history: bool) -> tuple[str, list]:
-    parsed = urlparse(target)
-    if parsed.scheme or parsed.netloc:
+    # Windows-Pfade wie C:\\repo dürfen nicht als URL interpretiert werden.
+    if GITHUB_RE.fullmatch(target):
         repo = _clone(target)
         try:
             findings = scan_git_history(repo) if history else scan_directory(repo)
             return target, findings
         finally:
             shutil.rmtree(repo.parent, ignore_errors=True)
+
     path = Path(target).expanduser().resolve()
+    if not path.exists():
+        raise OSError(f"Kein Verzeichnis: {path}")
+    if not path.is_dir():
+        raise OSError(f"Kein Verzeichnis: {path}")
     findings = scan_git_history(path) if history else scan_directory(path)
     return str(path), findings
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ghsecret", description="Deutscher Security-Scanner für potenziell veröffentlichte Secrets in Git-Repositories.")
+    parser = argparse.ArgumentParser(
+        prog="ghsecret",
+        description="Deutscher Security-Scanner für potenziell veröffentlichte Secrets in Git-Repositories.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     scan = sub.add_parser("scan", help="Repository oder lokalen Ordner untersuchen")
     scan.add_argument("ziel", help="GitHub-URL oder lokaler Repository-/Ordnerpfad")
@@ -60,7 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code)
+
     if args.command == "scan":
         try:
             target, findings = _scan_target(args.ziel, args.history)
