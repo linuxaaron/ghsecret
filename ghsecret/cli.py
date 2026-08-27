@@ -6,6 +6,7 @@ import argparse
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -85,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             target, findings = _scan_target(args.ziel, args.history)
         except (ValueError, RuntimeError, OSError) as exc:
-            print(f"Fehler: {exc}", file=__import__("sys").stderr)
+            print(f"Fehler: {exc}", file=sys.stderr)
             return 2
         print(render_json(findings, target) if args.format == "json" else render_text(findings, target))
         return 1 if findings else 0
